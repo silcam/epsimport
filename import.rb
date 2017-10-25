@@ -155,6 +155,84 @@ def add_employee_person(conn, params)
   insert_or_update conn, 'people', save_params
 end
 
+def convert_category(c)
+  c.to_i - 1
+end
+
+def convert_echelon(e)
+  %w[1 2 3 4 5 6 7 8 9 10 11 12 13 A B C D E F G].index(e) 
+end
+
+def convert_wage_scale(w)
+  %w[A B C D E].index(w)
+end
+
+def convert_wage_period(w)
+  %w[H M].index(w)
+end
+
+def convert_employment_status(s)
+  %w[F P T L Y I].index(s)
+end
+
+def convert_marital_status(s)
+  %w[C M W].index(s)
+end
+
+def employee_params(params)
+  # title, cnps, dipe, contract_start/end, category, echelon,
+  # wage_scale, wage_period, last_raise_date, taxable_percentage,
+  # transporation, employment_status, marital_status, hours_day,
+  # days_week, wage, supervisor_id, department_id, amical, uniondues
+  # first_day
+  p = {}
+  p[:id] = params['EmployeeID']
+  p[:person_id] = params['EmployeeID']
+  p[:title] = params['JobTitle']
+  p[:cnps] = params['CNPSno']
+  p[:dipe] = params['DIPESLine']
+  p[:contract_start] = extract_date params['BeginContract'], 'dd/mm/yyyy'
+  p[:first_day] = extract_date params['BeginContract'], 'dd/mm/yyyy'
+  p[:contract_end] = extract_date params['EndContract'], 'dd/mm/yyyy'
+  p[:category] = convert_category params['Category']
+  p[:echelon] = convert_echelon params['Echelon']
+  p[:wage_scale] = convert_wage_scale params['WageScale']
+  p[:wage_period] = convert_wage_period params['CFAper']
+  p[:last_raise_date] = extract_date params['LastVacation'], 'dd/mm/yyyy'
+  p[:taxable_percentage] = params['TaxablePercent']
+  p[:transportation] = params['Transportation']
+  p[:employment_status] = convert_employment_status params['Status']
+  p[:marital_status] = convert_marital_status params['MaritalStatus']
+  p[:hours_day] = params['HoursPerDay'].to_i
+  p[:days_week] = params['DaysPerWeek']
+  p[:wage] = params['Wage']
+  p[:supervisor_id] = params['SupervisorId']
+  p[:department_id] = params['DepartmentId']
+  p[:amical] = params['AMICAL']
+  p[:uniondues] = params['Union']
+  p.keys.each do |key|
+    if p[key].nil? or p[key] == ''
+      p.delete key
+    end
+  end
+  # puts p
+  p
+end
+
+
+def add_employee(conn, params)
+  emp_params = employee_params params
+  unless exists?(conn, 'supervisors', emp_params[:supervisor_id])
+    emp_params.delete(:supervisor_id)
+  end
+  unless exists?(conn, 'departments', emp_params[:department_id])
+    emp_params.delete(:department_id)
+  end
+
+  insert_or_update conn, 'employees', emp_params
+end
+  
+
 # Child Import ====================================================
 
 def child_names(name)
@@ -266,25 +344,27 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-# read_file('employees.csv') do |params|
-#   add_employee_person conn, params
-#   puts ''
-# end
-
-# read_file('children.csv') do |params|
-#   add_child conn, params
-#   puts ''
-# end
-
 # read_file('departments.csv') do |params|
 #   add_deparment conn, params
 #   puts ''
 # end
 
-read_file('supervisors.csv') do |params|
-  add_supervisor conn, params
+# read_file('supervisors.csv') do |params|
+#   add_supervisor conn, params
+#   puts ''
+# end
+
+
+read_file('employees.csv') do |params|
+  add_employee_person conn, params
+  add_employee conn, params
   puts ''
 end
+
+# read_file('children.csv') do |params|
+#   add_child conn, params
+#   puts ''
+# end
 
 # After we get employees assigned to supervisors
 # Merge all duplicate supervisors
