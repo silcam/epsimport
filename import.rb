@@ -214,6 +214,50 @@ def add_deparment(conn, params)
   insert_or_update conn, 'departments', dpt_params
 end
 
+def find_matching_person(conn, full_name)
+  full_name.split(/[\. ]/).each do |name|
+    if name.length > 1
+      sql = "SELECT id, first_name, last_name FROM people 
+             WHERE first_name ILIKE '%#{name}%' OR
+                   last_name  ILIKE '%#{name}%';"
+      result = query conn, sql
+      result.each do |row|
+        puts "Is #{full_name} the same as #{row['first_name']} #{row['last_name']}?"
+        if gets[0].downcase == 'y'
+          return row['id']
+        end
+      end
+    end
+  end
+  return nil
+end
+
+def supervisor_names(name)
+  split = name.rindex(/[\. ]/)
+  if split.nil?
+    return '', name
+  end
+  first = name.slice(0, split)
+  last = name.slice (split+1 .. -1)
+  return first, last
+end
+
+def add_supervisor(conn, params)
+  unless exists? conn, 'supervisors', params['SupervisorId']
+    person_id = find_matching_person(conn, params['Name'])
+    if person_id.nil?
+      first, last = supervisor_names params['Name']
+      conn.transaction do |conn|
+        insert conn, 'people', {first_name: first, last_name: last}
+        person_id = find_last(conn, 'people')['id']
+        insert conn, 'supervisors', {id: params['SupervisorId'], person_id: person_id}
+      end
+    else
+      insert conn, 'supervisors', {id: params['SupervisorId'], person_id: person_id}
+    end
+  end
+end
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -222,17 +266,27 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-read_file('employees.csv') do |params|
-  add_employee_person conn, params
+# read_file('employees.csv') do |params|
+#   add_employee_person conn, params
+#   puts ''
+# end
+
+# read_file('children.csv') do |params|
+#   add_child conn, params
+#   puts ''
+# end
+
+# read_file('departments.csv') do |params|
+#   add_deparment conn, params
+#   puts ''
+# end
+
+read_file('supervisors.csv') do |params|
+  add_supervisor conn, params
   puts ''
 end
 
-read_file('children.csv') do |params|
-  add_child conn, params
-  puts ''
-end
-
-read_file('departments.csv') do |params|
-  add_deparment conn, params
-  puts ''
-end
+# After we get employees assigned to supervisors
+# Merge all duplicate supervisors
+# Change existing test in add_supervisor to check if the id is greater
+#  than the current last id.
