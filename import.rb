@@ -19,7 +19,7 @@ def read_file(filename)
       params['linenumber'] = linenumber
       linenumber += 1
 
-      puts "PARAMS FROM FILE: #{params}"
+      # puts "PARAMS FROM FILE: #{params}"
       yield(params)
 
     end
@@ -53,16 +53,16 @@ def extract_date(s, format)
   invalid_date?(y, m, d) ? nil : "#{y}-#{m}-#{d}"
 end
 
-def timestamps
-  {created_at: 'now', updated_at: 'now'}
+def timestamps(existing)
+  existing ? {updated_at: 'now'} : 
+             {created_at: 'now', updated_at: 'now'}
 end
 
 def prepare_params(params)
   params.transform_values! do |v| 
     v.respond_to?(:gsub) ? v.gsub("'", "\\'") : v  
   end
-  params.merge! timestamps
-  puts "PARAMS: #{params}"
+  # puts "PARAMS: #{params}"
   params
 end
 
@@ -103,7 +103,7 @@ def update_sequence(conn, table)
 end
 
 def insert(conn, table, params)
-  params = prepare_params params
+  params = prepare_params(params).merge(timestamps(false))
   fields = params.keys
   sql = "INSERT INTO #{table} ("
   sql += fields.join(', ')
@@ -115,7 +115,7 @@ def insert(conn, table, params)
 end
 
 def update(conn, table, params)
-  params = prepare_params params
+  params = prepare_params(params).merge(timestamps(true))
   fields = params.keys
   sql = "UPDATE #{table} SET "
   sql += fields.collect{ |field| "#{field} = '#{params[field]}'"}.join(', ')
@@ -124,9 +124,6 @@ def update(conn, table, params)
 end
 
 def insert_or_update(conn, table, params)
-  sql = "SELECT id FROM #{table} WHERE id=$1;"
-  existing = query(conn, sql, [params[:id]])
-
   if exists?(conn, table, params[:id])
     update conn, table, params
   else
@@ -199,7 +196,7 @@ def add_child(conn, params)
   child_params = {id: params['linenumber'], 
                   parent_id: params['EmployeeId'], 
                   is_student: params['Student']}
-  puts "CHILD PARAMS: #{child_params}"
+  #puts "CHILD PARAMS: #{child_params}"
 
   child = find conn, 'children', child_params[:id]
   if child.nil?
@@ -209,6 +206,13 @@ def add_child(conn, params)
   end
 end
 
+def add_deparment(conn, params)
+  dpt_params = {id: params['DepartmentId'],
+                name: params['Name'],
+                description: params['Description'],
+                account: params['Account']}
+  insert_or_update conn, 'departments', dpt_params
+end
 
 # ============ START HERE ===================================
 # ===========================================================
@@ -225,5 +229,10 @@ end
 
 read_file('children.csv') do |params|
   add_child conn, params
+  puts ''
+end
+
+read_file('departments.csv') do |params|
+  add_deparment conn, params
   puts ''
 end
