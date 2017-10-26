@@ -82,7 +82,7 @@ end
 
 def find_last(conn, table)
   result = query conn, "SELECT * FROM #{table} ORDER BY id DESC LIMIT 1;"
-  result[0]
+  (result.ntuples > 0) ? result[0] : nil
 end
 
 def exists?(conn, table, id)
@@ -284,6 +284,8 @@ def add_child(conn, params)
   end
 end
 
+# Department Import ===============================================
+
 def add_deparment(conn, params)
   dpt_params = {id: params['DepartmentId'],
                 name: params['Name'],
@@ -291,6 +293,8 @@ def add_deparment(conn, params)
                 account: params['Account']}
   insert_or_update conn, 'departments', dpt_params
 end
+
+# Supervisor Import ==============================================
 
 def find_matching_person(conn, full_name)
   full_name.split(/[\. ]/).each do |name|
@@ -321,7 +325,9 @@ def supervisor_names(name)
 end
 
 def add_supervisor(conn, params)
-  unless exists? conn, 'supervisors', params['SupervisorId']
+  # unless exists? conn, 'supervisors', params['SupervisorId']
+  last_sup = find_last(conn, 'supervisors')
+  if last_sup.nil? or params[:id] > last_sup['id']
     person_id = find_matching_person(conn, params['Name'])
     if person_id.nil?
       first, last = supervisor_names params['Name']
@@ -335,6 +341,23 @@ def add_supervisor(conn, params)
     end
   end
 end
+
+def merge_duplicate_supervisors(conn)
+  sql = "SELECT person_id FROM supervisors GROUP BY person_id HAVING count(id)>1;"
+  result = query conn, sql
+  result.each do |row|
+    result_dups = query conn, "SELECT * FROM supervisors 
+                               WHERE person_id=#{row['person_id']};"
+    supervisor_id = result_dups[0]['id']                               
+    (1 .. (result_dups.ntuples - 1)).each do |index|
+      query conn, "UPDATE employees 
+                   SET supervisor_id=#{supervisor_id} 
+                   WHERE supervisor_id=#{result_dups[index]['id']};"
+
+      query conn, "DELETE FROM supervisors WHERE id=#{result_dups[index]['id']};"
+    end
+  end
+end                   
 
 # ============ START HERE ===================================
 # ===========================================================
@@ -354,12 +377,11 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 #   puts ''
 # end
 
-
-read_file('employees.csv') do |params|
-  add_employee_person conn, params
-  add_employee conn, params
-  puts ''
-end
+# read_file('employees.csv') do |params|
+#   add_employee_person conn, params
+#   add_employee conn, params
+#   puts ''
+# end
 
 # read_file('children.csv') do |params|
 #   add_child conn, params
@@ -370,3 +392,4 @@ end
 # Merge all duplicate supervisors
 # Change existing test in add_supervisor to check if the id is greater
 #  than the current last id.
+merge_duplicate_supervisors conn
