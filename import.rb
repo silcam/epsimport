@@ -80,6 +80,18 @@ def find(conn, table, id)
   (result.ntuples > 0) ? result[0] : nil
 end
 
+def find_payslip(conn, employee_id, period_m, period_y)
+  result = query conn, "SELECT * FROM payslips 
+                        WHERE employee_id=#{employee_id} 
+                        AND period_month=#{period_m} 
+                        AND period_year=#{period_y};"
+  (result.ntuples > 0) ? result[0] : nil
+end
+
+def payslip_exists?(conn, employee_id, period_m, period_y)
+  not find_payslip(conn, employee_id, period_y, period_m).nil?
+end
+
 def find_last(conn, table)
   result = query conn, "SELECT * FROM #{table} ORDER BY id DESC LIMIT 1;"
   (result.ntuples > 0) ? result[0] : nil
@@ -359,6 +371,99 @@ def merge_duplicate_supervisors(conn)
   end
 end                   
 
+# Payslip Import ============================================
+
+def parse_period(period)
+  m = period[0, 2].to_i
+  y = period[3, 2].to_i
+  y = (y > 20) ? y + 1900 : y + 2000
+  return m, y
+end
+
+def previous_period(month, year)
+  if month > 1
+    return (month - 1), year
+  end
+  return 12, (year - 1)
+end
+
+# def payslip_vacation_balance(conn, params)
+#   month, year = parse_period params['Period']
+#   month, year = previous_period(month, year)
+#   v_bal = params['PrevVacDays']
+#   prev_payslip = find_payslip conn, params['EmployeeId'], month, year
+#   if prev_payslip.nil?
+#     payslip_params = {employee_id: params['EmployeeId'], 
+#                       period_month: month, 
+#                       period_year: year, 
+#                       vacation_balance: v_bal}
+#     insert conn, 'payslips', payslip_params
+#   else
+#     payslip_params = {id: prev_payslip['id'], vacation_balance: v_bal}
+#     update conn, 'payslips', payslip_params
+#   end
+# end
+
+def payslip_vacation_balance(conn, params)
+  month, year = parse_period params['Period']
+  days_start_balance = params['PrevVacDays'].to_f + params['SupVacDaysInPeriod'].to_f
+  days_earned = params['VacationDays'].to_f + params['SupVacDays'].to_f
+  days_balance = days_start_balance + days_earned
+
+  vpay_start_balance = params['PrevVacPay'].to_f.to_i + params['SupVacPayInPeriod'].to_i
+  vpay_earned = params['VacationPay'].to_f.to_i + params['SupVacPayInPeriod'].to_i
+  vpay_balance = vpay_start_balance + vpay_earned
+
+  ps_params = {id: params['PaySlipID'],
+               employee_id: params['EmployeeId'],
+               period_year: year,
+               period_month: month,
+               vacation_earned: days_earned,
+               vacation_balance: days_balance,
+               vacation_pay_earned: vpay_earned,
+               vacation_pay_balance: vpay_balance}
+  
+  insert_or_update conn, 'payslips', ps_params
+end              
+
+def add_payslip(conn, params)
+  # Skip the malformatted ones
+  return unless (params['Period'].include? '/')
+
+  payslip_vacation_balance(conn, params)
+end
+
+def add_vacation(conn, params)
+  month, year = parse_period params['Period']
+  start_date = extract_date params['VacationStart'], 'dd/mm/yyyy'
+  end_date = extract_date params['VacationEnd'], 'dd/mm/yyyy'
+  days_used = params['VacationDays'].to_f.to_i
+  pay_used = params['VacationPay'].to_f.to_i
+
+  unless start_date.nil? or end_date.nil?
+    v_params = { id: params['PaySlipID'],
+                employee_id: params['EmployeeId'],
+                start_date: start_date,
+                end_date: end_date}
+
+    insert_or_update conn, 'vacations', v_params
+  end
+  
+  payslip = find_payslip conn, params['EmployeeId'], month, year
+  unless payslip.nil?
+    days_balance = payslip['vacation_balance'].to_f + days_used
+    pay_balance = payslip['vacation_pay_balance'].to_i + pay_used
+
+    ps_params = { id: payslip['id'],
+                  vacation_used: (days_used * -1),
+                  vacation_balance: days_balance,
+                  vacation_pay_used: (pay_used * -1),
+                  vacation_pay_balance: pay_balance }
+
+    update conn, 'payslips', ps_params
+  end
+end
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -372,13 +477,17 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 #   puts ''
 # end
 
+# read_file('employees.csv') do |params|
+#   add_employee_person conn, params
+#   puts ''
+# end
+
 # read_file('supervisors.csv') do |params|
 #   add_supervisor conn, params
 #   puts ''
 # end
 
 # read_file('employees.csv') do |params|
-#   add_employee_person conn, params
 #   add_employee conn, params
 #   puts ''
 # end
@@ -388,8 +497,28 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 #   puts ''
 # end
 
-# After we get employees assigned to supervisors
-# Merge all duplicate supervisors
-# Change existing test in add_supervisor to check if the id is greater
-#  than the current last id.
-merge_duplicate_supervisors conn
+# merge_duplicate_supervisors conn
+
+read_file('payslips.csv') do |params|
+  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+    add_payslip conn, params
+  end
+end
+
+read_file('payslip_history.csv') do |params|
+  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+    add_payslip conn, params
+  end
+end
+
+read_file('payslips.csv') do |params|
+  if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+    add_vacation conn, params
+  end
+end
+
+read_file('payslip_history.csv') do |params|
+  if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+    add_vacation conn, params
+  end
+end
