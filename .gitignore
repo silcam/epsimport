@@ -3,3 +3,4 @@
 *.pgdump
 *.bz2
 *.sql
+*.gz
