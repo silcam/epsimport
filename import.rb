@@ -339,7 +339,7 @@ end
 def add_supervisor(conn, params)
   # unless exists? conn, 'supervisors', params['SupervisorId']
   last_sup = find_last(conn, 'supervisors')
-  if last_sup.nil? or params[:id] > last_sup['id']
+  if last_sup.nil? or params['SupervisorId'].to_i > last_sup['id'].to_i
     person_id = find_matching_person(conn, params['Name'])
     if person_id.nil?
       first, last = supervisor_names params['Name']
@@ -386,23 +386,6 @@ def previous_period(month, year)
   end
   return 12, (year - 1)
 end
-
-# def payslip_vacation_balance(conn, params)
-#   month, year = parse_period params['Period']
-#   month, year = previous_period(month, year)
-#   v_bal = params['PrevVacDays']
-#   prev_payslip = find_payslip conn, params['EmployeeId'], month, year
-#   if prev_payslip.nil?
-#     payslip_params = {employee_id: params['EmployeeId'], 
-#                       period_month: month, 
-#                       period_year: year, 
-#                       vacation_balance: v_bal}
-#     insert conn, 'payslips', payslip_params
-#   else
-#     payslip_params = {id: prev_payslip['id'], vacation_balance: v_bal}
-#     update conn, 'payslips', payslip_params
-#   end
-# end
 
 def payslip_vacation_balance(conn, params)
   month, year = parse_period params['Period']
@@ -472,32 +455,32 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-# read_file('departments.csv') do |params|
-#   add_deparment conn, params
-#   puts ''
-# end
+read_file('departments.csv') do |params|
+  add_deparment conn, params
+  puts ''
+end
 
-# read_file('employees.csv') do |params|
-#   add_employee_person conn, params
-#   puts ''
-# end
+read_file('employees.csv') do |params|
+  add_employee_person conn, params
+  puts ''
+end
 
-# read_file('supervisors.csv') do |params|
-#   add_supervisor conn, params
-#   puts ''
-# end
+read_file('supervisors.csv') do |params|
+  add_supervisor conn, params
+  puts ''
+end
 
-# read_file('employees.csv') do |params|
-#   add_employee conn, params
-#   puts ''
-# end
+read_file('employees.csv') do |params|
+  add_employee conn, params
+  puts ''
+end
 
-# read_file('children.csv') do |params|
-#   add_child conn, params
-#   puts ''
-# end
+read_file('children.csv') do |params|
+  add_child conn, params
+  puts ''
+end
 
-# merge_duplicate_supervisors conn
+merge_duplicate_supervisors conn
 
 read_file('payslips.csv') do |params|
   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
