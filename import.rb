@@ -459,6 +459,26 @@ def add_vacation(conn, params)
   end
 end
 
+def round_to_nearest_half(num)
+  (num * 2).round.to_f / 2
+end
+
+def normalize_vacay_balances(conn)
+  result = query conn, "SELECT year, month FROM last_posted_periods;"
+  posted = result[0]
+  sql = "SELECT id, vacation_balance FROM payslips 
+         WHERE period_year=#{posted['year']} 
+         AND period_month=#{posted['month']};"
+  payslips = query conn, sql
+  payslips.each do |payslip|
+    balance = payslip['vacation_balance'].to_f
+    new_balance = round_to_nearest_half balance
+    puts "Change #{balance} to #{new_balance}"
+    update conn, 'payslips', {id: payslip['id'], vacation_balance: new_balance}
+  end
+end
+
+
 # Transaction Import ========================================
 
 def add_charge(conn, params)
@@ -593,6 +613,8 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 #   end
 # end
 
+normalize_vacay_balances conn
+
 # read_file('transaction_history.csv') do |params|
 #   add_transaction conn, params
 # end
@@ -601,6 +623,6 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 #   add_transaction conn, params
 # end
 
-read_file('bonuses.csv') do |params|
-  add_bonus conn, params
-end
+# read_file('bonuses.csv') do |params|
+#   add_bonus conn, params
+# end
