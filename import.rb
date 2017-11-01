@@ -521,6 +521,19 @@ def add_transaction(conn, params)
   end
 end
 
+# Bonuses =================================================
+
+def add_bonus(conn, params)
+  type = (params['BonusUnits'] == 'CFA') ? 1 : 0
+  bonus_params = { id: params['BonusID'],
+                   name: params['BonusName'],
+                   quantity: params['BonusQuantity'],
+                   bonus_type: type,
+                   comment: params['Comment'] }
+
+  insert_or_update conn, 'bonuses', bonus_params
+end                   
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -587,3 +600,7 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 # read_file('transactions.csv') do |params|
 #   add_transaction conn, params
 # end
+
+read_file('bonuses.csv') do |params|
+  add_bonus conn, params
+end
