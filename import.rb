@@ -6,13 +6,25 @@ require 'date'
 def read_file(filename)
   filename = "csv/#{filename}"
   File.open(filename, 'r') do |csvfile|
-    headers = csvfile.gets.chomp.split('|')
+    headers = csvfile.gets.chomp.split('|', -1)
     
     linenumber = 1
     while line = csvfile.gets
       line.chomp!
       params = {}
-      fields = line.split('|')
+      fields = line.split('|', -1)
+      while fields.count < headers.count
+        # puts "Headers: #{headers.count}. Fields: #{fields.count}"
+        # puts headers
+        # puts fields
+        line2 = csvfile.gets.chomp
+        fields2 = line2.split('|', -1)
+        fields[-1] = (fields[-1] or '') + ' ' + (fields2[0] or '')
+        fields += fields2.drop(1)
+      end
+      unless fields.count == headers.count
+        raise "CSV Parse error - Unable to match fields to headers"
+      end
       fields.each_with_index do |field, i|
         params[headers[i]] = field
       end
@@ -42,7 +54,7 @@ def invalid_date?(y, m, d)
   false
 end
 
-def extract_date(s, format)
+def extract_date(s, format='dd/mm/yyyy')
   return if s.nil? || s.length < format.length
   y = s[format.index('yyyy'), 4]
   m = s[format.index('mm'), 2]
@@ -60,7 +72,7 @@ end
 
 def prepare_params(params)
   params.transform_values! do |v| 
-    v.respond_to?(:gsub) ? v.gsub("'", "\\'") : v  
+    v.respond_to?(:gsub) ? v.gsub("'", "''") : v  
   end
   # puts "PARAMS: #{params}"
   params
@@ -447,6 +459,68 @@ def add_vacation(conn, params)
   end
 end
 
+# Transaction Import ========================================
+
+def add_charge(conn, params)
+  date = extract_date params['TransDate']
+  amount = (params['Quantity'].to_f.to_i * -1)
+  return if date.nil?
+  charge_params = { id: params['TransID'],
+                    date: date,
+                    amount: amount,
+                    employee_id: params['EmployeeId'],
+                    note: "[#{params['CodeId']}] #{params['Comment']}" }
+
+  insert_or_update conn, 'charges', charge_params                    
+end
+
+def add_loan(conn, params)
+  date = extract_date params['TransDate']
+  return if date.nil?
+  amount = params['Quantity'].to_f.to_i
+  loan_params = { id: params['TransID'],
+                  amount: amount,
+                  comment: params['Comment'],
+                  employee_id: params['EmployeeId'],
+                  origination: date }
+
+  insert_or_update conn, 'loans', loan_params                  
+end
+
+def find_loan(conn, employee_id, payment_date)
+  sql = "SELECT id FROM loans WHERE origination < '#{payment_date}' ORDER BY origination DESC LIMIT 1;"
+  loans = query conn, sql
+  return (loans.ntuples > 0) ? loans[0] : nil
+end
+
+def add_loan_payment(conn, params)
+  date = extract_date params['TransDate']
+  return if date.nil?
+  loan = find_loan conn, params['EmployeeId'], date
+  return if loan.nil?
+  amount = params['Quantity'].to_f.to_i
+
+  payment_params = { id: params['TransID'],
+                     loan_id: loan['id'],
+                     amount: amount,
+                     date: date }
+
+  insert_or_update conn, 'loan_payments', payment_params                     
+end
+
+def add_transaction(conn, params)
+  if exists?(conn, 'employees', params['EmployeeId'])
+    case params['CodeId']
+    when 'EL', 'MC', 'PC', 'RE', 'TC', 'WC', 'MP'
+      add_charge conn, params
+    when 'NL'
+      add_loan conn, params
+    when 'LN'
+      add_loan_payment conn, params
+    end
+  end
+end
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -455,53 +529,61 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-read_file('departments.csv') do |params|
-  add_deparment conn, params
-  puts ''
-end
+# read_file('departments.csv') do |params|
+#   add_deparment conn, params
+#   puts ''
+# end
 
-read_file('employees.csv') do |params|
-  add_employee_person conn, params
-  puts ''
-end
+# read_file('employees.csv') do |params|
+#   add_employee_person conn, params
+#   puts ''
+# end
 
-read_file('supervisors.csv') do |params|
-  add_supervisor conn, params
-  puts ''
-end
+# read_file('supervisors.csv') do |params|
+#   add_supervisor conn, params
+#   puts ''
+# end
 
-read_file('employees.csv') do |params|
-  add_employee conn, params
-  puts ''
-end
+# read_file('employees.csv') do |params|
+#   add_employee conn, params
+#   puts ''
+# end
 
-read_file('children.csv') do |params|
-  add_child conn, params
-  puts ''
-end
+# read_file('children.csv') do |params|
+#   add_child conn, params
+#   puts ''
+# end
 
-merge_duplicate_supervisors conn
+# merge_duplicate_supervisors conn
 
-read_file('payslips.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    add_payslip conn, params
-  end
-end
+# read_file('payslips.csv') do |params|
+#   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+#     add_payslip conn, params
+#   end
+# end
 
-read_file('payslip_history.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    add_payslip conn, params
-  end
-end
+# read_file('payslip_history.csv') do |params|
+#   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+#     add_payslip conn, params
+#   end
+# end
 
-read_file('payslips.csv') do |params|
-  if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
-    add_vacation conn, params
-  end
-end
+# read_file('payslips.csv') do |params|
+#   if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+#     add_vacation conn, params
+#   end
+# end
 
-read_file('payslip_history.csv') do |params|
-  if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
-    add_vacation conn, params
-  end
-end
+# read_file('payslip_history.csv') do |params|
+#   if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+#     add_vacation conn, params
+#   end
+# end
+
+# read_file('transaction_history.csv') do |params|
+#   add_transaction conn, params
+# end
+
+# read_file('transactions.csv') do |params|
+#   add_transaction conn, params
+# end
