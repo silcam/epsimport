@@ -2,6 +2,7 @@ require 'pg'
 require 'date'
 
 ERRORS = []
+IMBALANCES = []
 
 # FILE IO ======================================================
 
@@ -155,6 +156,12 @@ def insert_or_update(conn, table, params)
   else
     insert conn, table, params
   end
+end
+
+def smallest_free_id(conn, table)
+  id = 1
+  id += 1 while exists? conn, table, id
+  id
 end
 
 # Employee Import ====================================================
@@ -495,12 +502,11 @@ def add_loan_from_payslip(conn, params)
   insert_or_update conn, 'loans', loan_params
 end
 
-def add_loan_payment_from_payslip(conn, params)
-  payment_params = { date: date_from_period(params['Period']) }
+def add_loan_payments(conn, employee_id, payment_amount, date)
+  payment_params = { date: date }
 
   my_loans = query conn, "SELECT * FROM loans 
-                          WHERE employee_id=#{params['EmployeeId']} ORDER BY id;"
-  payment_amount = params['LoanPayment'].to_i
+                          WHERE employee_id=#{employee_id} ORDER BY id;"
   i = 0
   while(i < my_loans.ntuples)
     loan = my_loans[i]
@@ -512,7 +518,7 @@ def add_loan_payment_from_payslip(conn, params)
         payment_params[:amount] = payment_amount
         payment_params[:loan_id] = loan['id']
         insert conn, 'loan_payments', payment_params
-        return
+        return 0
       else
         payment_amount = payment_amount - remaining
         payment_params[:amount] = remaining
@@ -522,7 +528,18 @@ def add_loan_payment_from_payslip(conn, params)
     end
     i += 1
   end
-  ERRORS << "Loan Balance error for payslip ##{params['PaySlipID']}."
+  return payment_amount
+end
+
+def add_loan_payment_from_payslip(conn, params)
+  date = date_from_period(params['Period'])
+  remainder = add_loan_payments conn, 
+                                params['EmployeeId'], 
+                                params['LoanPayment'].to_i,
+                                date
+  if remainder != 0
+    ERRORS << "Loan Balance error for payslip ##{params['PaySlipID']}."
+  end
 end
 
 def payslip_loans(conn, params)
@@ -543,6 +560,47 @@ def payslip_loan_payments(conn, params)
   end
 end
 
+def add_correction_loan(conn, employee_id, amount)
+  id = smallest_free_id conn, 'loans'
+  loan_params = { id: id,
+                  employee_id: employee_id,
+                  amount: amount,
+                  origination: Date.today.to_s, 
+                  comment: "Auto-created to match existing balance." }
+  insert conn, 'loans', loan_params
+end
+
+def add_correction_payments(conn, employee_id, amount)
+  remainder = add_loan_payments(conn, employee_id, amount, Date.today.to_s)
+  if(remainder != 0)
+    raise "Had a remainder of #{amount} after adding correction payments !"
+  end
+end
+
+def normalize_loan_balance(conn, params)
+  sql = "SELECT sum(amount) FROM loans WHERE employee_id=#{params['EmployeeId']};"
+  loan_total = query(conn, sql)[0]['sum'].to_i
+  sql = "SELECT sum(loan_payments.amount) FROM loans 
+          INNER JOIN loan_payments ON loans.id=loan_id 
+          WHERE employee_id=#{params['EmployeeId']};"
+  payment_total = query(conn, sql)[0]['sum'].to_i
+  balance = loan_total - payment_total
+
+  check_balance = params['PrevLoan'].to_i + 
+                  params['NewLoan'].to_i - 
+                  params['LoanPayment'].to_i
+  check_balance = 0 if check_balance < 0
+
+  if balance != check_balance
+    IMBALANCES << "[#{params['EmployeeId']}] #{params['Name']} Calc: #{balance}. Payslip: #{check_balance}."                  
+    if balance < check_balance
+      add_correction_loan(conn, params['EmployeeId'], check_balance - balance)
+    else
+      add_correction_payments(conn, params['EmployeeId'], balance - check_balance)
+    end
+  end
+end
+
 # Transaction Import ========================================
 
 def add_charge(conn, params)
@@ -558,6 +616,7 @@ def add_charge(conn, params)
   insert_or_update conn, 'charges', charge_params                    
 end
 
+# DEP
 def add_loan(conn, params)
   date = extract_date params['TransDate']
   return if date.nil?
@@ -571,12 +630,14 @@ def add_loan(conn, params)
   insert_or_update conn, 'loans', loan_params                  
 end
 
+# DEP
 def find_loan(conn, employee_id, payment_date)
   sql = "SELECT id FROM loans WHERE origination < '#{payment_date}' ORDER BY origination DESC LIMIT 1;"
   loans = query conn, sql
   return (loans.ntuples > 0) ? loans[0] : nil
 end
 
+# DEP
 def add_loan_payment(conn, params)
   date = extract_date params['TransDate']
   return if date.nil?
@@ -678,30 +739,51 @@ def add_vacations(conn)
 end
 
 def add_loans(conn)
-  read_file('payslip_history.csv') do |params|
-    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-      payslip_loans conn, params
-    end
-  end
+  # read_file('payslip_history.csv') do |params|
+  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+  #     payslip_loans conn, params
+  #   end
+  # end
   
+  # read_file('payslips.csv') do |params|
+  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+  #     payslip_loans conn, params
+  #   end
+  # end
+  
+  # query conn, "DELETE FROM loan_payments;"
+  # read_file('payslip_history.csv') do |params|
+  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+  #     payslip_loan_payments conn, params
+  #   end
+  # end
+  
+  # read_file('payslips.csv') do |params|
+  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+  #     payslip_loan_payments conn, params
+  #   end
+  # end
+
   read_file('payslips.csv') do |params|
-    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-      payslip_loans conn, params
+    if params['Period'].include? '/' # Skip the malformatted ones
+      if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+        last_payslip = query(conn, "SELECT * FROM payslips 
+                                    WHERE employee_id=#{params['EmployeeId']} 
+                                    ORDER BY period_year DESC, period_month DESC 
+                                    LIMIT 1;")[0]
+        if params['Period'] == "#{last_payslip['period_month']}/#{last_payslip['period_year'][2, 2]}"
+          normalize_loan_balance conn, params
+        else
+          puts ''
+          puts "Not last payslip: #{params['Period']} vs. #{last_payslip['period_month']}/#{last_payslip['period_year']}."
+          puts ''
+        end
+      end
     end
   end
-  
-  query conn, "DELETE FROM loan_payments;"
-  read_file('payslip_history.csv') do |params|
-    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-      payslip_loan_payments conn, params
-    end
-  end
-  
-  read_file('payslips.csv') do |params|
-    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-      payslip_loan_payments conn, params
-    end
-  end
+  puts "Imbalances:"
+  IMBALANCES.each{ |s| puts s }
+  puts ''
 end
 
 def add_transactions(conn)
