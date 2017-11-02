@@ -84,7 +84,7 @@ end
 # DB Helpers =========================================================
 
 def query(conn, sql, params=nil)
-  puts "#{sql} [#{params}]"
+  puts "#{sql.gsub("\n", ' ')} [#{params}]"
   params.nil? ? 
           conn.exec(sql) :
           conn.exec_params(sql, params)
@@ -120,17 +120,18 @@ end
 def update_sequence(conn, table)
   sequence_res = conn.exec("SELECT pg_get_serial_sequence('#{table}', 'id');")
   sequence = sequence_res[0]['pg_get_serial_sequence']
-  seq_val = conn.exec("SELECT last_value FROM #{sequence};")[0]['last_value']
-  biggest_id = conn.exec("SELECT MAX(id) FROM #{table};")[0]['max']
+  seq_val = conn.exec("SELECT last_value FROM #{sequence};")[0]['last_value'].to_i
+  biggest_id = conn.exec("SELECT MAX(id) FROM #{table};")[0]['max'].to_i
   
   unless seq_val > biggest_id
     restart = biggest_id.to_i + 1
-    conn.exec("ALTER SEQUENCE #{sequence} RESTART WITH #{restart};")
+    query(conn, "ALTER SEQUENCE #{sequence} RESTART WITH #{restart};")
   end
 end
 
-def insert(conn, table, params)
-  params = prepare_params(params).merge(timestamps(false))
+def insert(conn, table, params, include_timestamps=true)
+  params = prepare_params(params)
+  params.merge!(timestamps(false)) if include_timestamps
   fields = params.keys
   sql = "INSERT INTO #{table} ("
   sql += fields.join(', ')
@@ -670,14 +671,50 @@ end
 
 def add_bonus(conn, params)
   type = (params['BonusUnits'] == 'CFA') ? 1 : 0
+  quantity = params['BonusQuantity']
+  quantity = params['BonusQuantity'].to_f / 100 if type == 0
   bonus_params = { id: params['BonusID'],
                    name: params['BonusName'],
-                   quantity: params['BonusQuantity'],
+                   quantity: quantity,
                    bonus_type: type,
                    comment: params['Comment'] }
 
   insert_or_update conn, 'bonuses', bonus_params
-end                   
+end 
+
+def add_employee_bonuses(conn, params)
+  (1 .. 10).each do |i|
+    field = "Bonus#{i}"
+    if params[field] == '1'
+      insert conn, 
+             'bonuses_employees', 
+             {employee_id: params['EmployeeID'], bonus_id: i}, 
+             false
+    end
+  end
+
+  if params['PrimeCaisse'].to_f != 0
+    percent = (params['PrimeCaisse'].to_f * 100).to_i
+    percent = percent.to_f / 100
+    pc_bonus_res = query(conn, "SELECT id FROM bonuses 
+                                WHERE name='PrimeCaisse' 
+                                AND quantity=#{percent};")
+    if pc_bonus_res.ntuples == 0
+      b_params = { name: 'PrimeCaisse', 
+                   quantity: percent,
+                   bonus_type: 0 }
+      insert conn, 'bonuses', b_params
+      pc_bonus = find_last(conn, 'bonuses')
+    else
+      pc_bonus = pc_bonus_res[0]
+    end
+    bonus_id = pc_bonus['id']
+    insert conn,
+           'bonuses_employees',
+           {employee_id: params['EmployeeID'], bonus_id: bonus_id },
+           false
+  end
+end                                              
 
 # Grouped Adds ===========================================
 
@@ -739,30 +776,30 @@ def add_vacations(conn)
 end
 
 def add_loans(conn)
-  # read_file('payslip_history.csv') do |params|
-  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-  #     payslip_loans conn, params
-  #   end
-  # end
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loans conn, params
+    end
+  end
   
-  # read_file('payslips.csv') do |params|
-  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-  #     payslip_loans conn, params
-  #   end
-  # end
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loans conn, params
+    end
+  end
   
-  # query conn, "DELETE FROM loan_payments;"
-  # read_file('payslip_history.csv') do |params|
-  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-  #     payslip_loan_payments conn, params
-  #   end
-  # end
+  query conn, "DELETE FROM loan_payments;"
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loan_payments conn, params
+    end
+  end
   
-  # read_file('payslips.csv') do |params|
-  #   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-  #     payslip_loan_payments conn, params
-  #   end
-  # end
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loan_payments conn, params
+    end
+  end
 
   read_file('payslips.csv') do |params|
     if params['Period'].include? '/' # Skip the malformatted ones
@@ -796,9 +833,14 @@ def add_transactions(conn)
   end
 end
 
-def add_misc(conn)
+def add_bonuses(conn)
   read_file('bonuses.csv') do |params|
     add_bonus conn, params
+  end
+
+  query conn, "DELETE FROM bonuses_employees;"
+  read_file('employees.csv') do |params|
+    add_employee_bonuses conn, params
   end
 end
 
@@ -812,9 +854,9 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 
 # add_people conn
 # add_vacations conn
-add_loans conn
+# add_loans conn
 # add_transactions conn
-# add_misc conn
+add_bonuses conn
 
 ERRORS.each do |error|
   puts error
