@@ -2,6 +2,7 @@ require 'pg'
 require 'date'
 
 ERRORS = []
+
 # FILE IO ======================================================
 
 def read_file(filename)
@@ -407,6 +408,8 @@ def date_from_period(period)
   "#{year}-#{mtext}-01"
 end
 
+# Payslip Vacation Import ==================================
+
 def payslip_vacation_balance(conn, params)
   # Skip the malformatted ones
   return unless (params['Period'].include? '/')
@@ -431,6 +434,58 @@ def payslip_vacation_balance(conn, params)
   
   insert_or_update conn, 'payslips', ps_params
 end
+
+def add_vacation(conn, params)
+  month, year = parse_period params['Period']
+  start_date = extract_date params['VacationStart'], 'dd/mm/yyyy'
+  end_date = extract_date params['VacationEnd'], 'dd/mm/yyyy'
+  days_used = params['VacationDays'].to_f.to_i
+  pay_used = params['VacationPay'].to_f.to_i
+
+  unless start_date.nil? or end_date.nil?
+    v_params = { id: params['PaySlipID'],
+                employee_id: params['EmployeeId'],
+                start_date: start_date,
+                end_date: end_date}
+
+    insert_or_update conn, 'vacations', v_params
+  end
+  
+  payslip = find_payslip conn, params['EmployeeId'], month, year
+  unless payslip.nil?
+    days_balance = payslip['vacation_balance'].to_f + days_used
+    pay_balance = payslip['vacation_pay_balance'].to_i + pay_used
+
+    ps_params = { id: payslip['id'],
+                  vacation_used: (days_used * -1),
+                  vacation_balance: days_balance,
+                  vacation_pay_used: (pay_used * -1),
+                  vacation_pay_balance: pay_balance }
+
+    update conn, 'payslips', ps_params
+  end
+end
+
+def round_to_nearest_half(num)
+  (num * 2).round.to_f / 2
+end
+
+def normalize_vacay_balances(conn)
+  result = query conn, "SELECT year, month FROM last_posted_periods;"
+  posted = result[0]
+  sql = "SELECT id, vacation_balance FROM payslips 
+         WHERE period_year=#{posted['year']} 
+         AND period_month=#{posted['month']};"
+  payslips = query conn, sql
+  payslips.each do |payslip|
+    balance = payslip['vacation_balance'].to_f
+    new_balance = round_to_nearest_half balance
+    # puts "Change #{balance} to #{new_balance}"
+    update conn, 'payslips', {id: payslip['id'], vacation_balance: new_balance}
+  end
+end
+
+# Payslip Loan Import ========================================
 
 def add_loan_from_payslip(conn, params)
   loan_params = { id: params['PaySlipID'],
@@ -487,57 +542,6 @@ def payslip_loan_payments(conn, params)
     add_loan_payment_from_payslip conn, params
   end
 end
-
-def add_vacation(conn, params)
-  month, year = parse_period params['Period']
-  start_date = extract_date params['VacationStart'], 'dd/mm/yyyy'
-  end_date = extract_date params['VacationEnd'], 'dd/mm/yyyy'
-  days_used = params['VacationDays'].to_f.to_i
-  pay_used = params['VacationPay'].to_f.to_i
-
-  unless start_date.nil? or end_date.nil?
-    v_params = { id: params['PaySlipID'],
-                employee_id: params['EmployeeId'],
-                start_date: start_date,
-                end_date: end_date}
-
-    insert_or_update conn, 'vacations', v_params
-  end
-  
-  payslip = find_payslip conn, params['EmployeeId'], month, year
-  unless payslip.nil?
-    days_balance = payslip['vacation_balance'].to_f + days_used
-    pay_balance = payslip['vacation_pay_balance'].to_i + pay_used
-
-    ps_params = { id: payslip['id'],
-                  vacation_used: (days_used * -1),
-                  vacation_balance: days_balance,
-                  vacation_pay_used: (pay_used * -1),
-                  vacation_pay_balance: pay_balance }
-
-    update conn, 'payslips', ps_params
-  end
-end
-
-def round_to_nearest_half(num)
-  (num * 2).round.to_f / 2
-end
-
-def normalize_vacay_balances(conn)
-  result = query conn, "SELECT year, month FROM last_posted_periods;"
-  posted = result[0]
-  sql = "SELECT id, vacation_balance FROM payslips 
-         WHERE period_year=#{posted['year']} 
-         AND period_month=#{posted['month']};"
-  payslips = query conn, sql
-  payslips.each do |payslip|
-    balance = payslip['vacation_balance'].to_f
-    new_balance = round_to_nearest_half balance
-    # puts "Change #{balance} to #{new_balance}"
-    update conn, 'payslips', {id: payslip['id'], vacation_balance: new_balance}
-  end
-end
-
 
 # Transaction Import ========================================
 
@@ -614,6 +618,108 @@ def add_bonus(conn, params)
   insert_or_update conn, 'bonuses', bonus_params
 end                   
 
+# Grouped Adds ===========================================
+
+def add_people(conn)
+  read_file('departments.csv') do |params|
+    add_deparment conn, params
+    puts ''
+  end
+
+  read_file('employees.csv') do |params|
+    add_employee_person conn, params
+    puts ''
+  end
+
+  read_file('supervisors.csv') do |params|
+    add_supervisor conn, params
+    puts ''
+  end
+
+  read_file('employees.csv') do |params|
+    add_employee conn, params
+    puts ''
+  end
+
+  read_file('children.csv') do |params|
+    add_child conn, params
+    puts ''
+  end
+
+  merge_duplicate_supervisors conn
+end
+
+def add_vacations(conn)
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_vacation_balance conn, params
+    end
+  end
+
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_vacation_balance conn, params
+    end
+  end
+
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+      add_vacation conn, params
+    end
+  end
+
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
+      add_vacation conn, params
+    end
+  end
+
+  normalize_vacay_balances conn
+end
+
+def add_loans(conn)
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loans conn, params
+    end
+  end
+  
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loans conn, params
+    end
+  end
+  
+  query conn, "DELETE FROM loan_payments;"
+  read_file('payslip_history.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loan_payments conn, params
+    end
+  end
+  
+  read_file('payslips.csv') do |params|
+    if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
+      payslip_loan_payments conn, params
+    end
+  end
+end
+
+def add_transactions(conn)
+  read_file('transaction_history.csv') do |params|
+    add_transaction conn, params
+  end
+
+  read_file('transactions.csv') do |params|
+    add_transaction conn, params
+  end
+end
+
+def add_misc(conn)
+  read_file('bonuses.csv') do |params|
+    add_bonus conn, params
+  end
+end
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -622,95 +728,11 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-# read_file('departments.csv') do |params|
-#   add_deparment conn, params
-#   puts ''
-# end
-
-# read_file('employees.csv') do |params|
-#   add_employee_person conn, params
-#   puts ''
-# end
-
-# read_file('supervisors.csv') do |params|
-#   add_supervisor conn, params
-#   puts ''
-# end
-
-# read_file('employees.csv') do |params|
-#   add_employee conn, params
-#   puts ''
-# end
-
-# read_file('children.csv') do |params|
-#   add_child conn, params
-#   puts ''
-# end
-
-# merge_duplicate_supervisors conn
-
-# read_file('payslip_history.csv') do |params|
-#   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-#     payslip_vacation_balance conn, params
-#   end
-# end
-
-# read_file('payslips.csv') do |params|
-#   if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-#     payslip_vacation_balance conn, params
-#   end
-# end
-
-# read_file('payslips.csv') do |params|
-#   if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
-#     add_vacation conn, params
-#   end
-# end
-
-# read_file('payslip_history.csv') do |params|
-#   if params['Type'] == 'V' and exists?(conn, 'employees', params['EmployeeId'])
-#     add_vacation conn, params
-#   end
-# end
-
-read_file('payslip_history.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    payslip_loans conn, params
-  end
-end
-
-read_file('payslips.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    payslip_loans conn, params
-  end
-end
-
-query conn, "DELETE FROM loan_payments;"
-read_file('payslip_history.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    payslip_loan_payments conn, params
-  end
-end
-
-read_file('payslips.csv') do |params|
-  if params['Type'] == 'P' and exists?(conn, 'employees', params['EmployeeId'])
-    payslip_loan_payments conn, params
-  end
-end
-
-# normalize_vacay_balances conn
-
-# read_file('transaction_history.csv') do |params|
-#   add_transaction conn, params
-# end
-
-# read_file('transactions.csv') do |params|
-#   add_transaction conn, params
-# end
-
-# read_file('bonuses.csv') do |params|
-#   add_bonus conn, params
-# end
+# add_people conn
+# add_vacations conn
+add_loans conn
+# add_transactions conn
+# add_misc conn
 
 ERRORS.each do |error|
   puts error
