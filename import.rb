@@ -416,6 +416,81 @@ def date_from_period(period)
   "#{year}-#{mtext}-01"
 end
 
+def add_payslip_earnings_deductions(conn, params)
+  query conn, "DELETE FROM earnings WHERE payslip_id=#{params['PaySlipID']};"
+  query conn, "DELETE FROM deductions WHERE payslip_id=#{params['PaySlipID']};"
+
+  %w[BonusPrimeExcep BonusOther MiscPay1 Transport].each do |earning|
+    if params[earning].to_i > 0
+      earning_params = { payslip_id: params['PaySlipID'],
+                         amount: params[earning] }
+      earning_params[:description] = 
+        case earning
+        when 'BonusOther'
+          params['BonusOtherDesc']
+        when 'MiscPay1'
+          params['MiscDesc1']
+        else
+          earning
+        end
+      earning_params[:is_bonus] = 
+        case earning
+        when 'BonusOther', 'BonusPrimeExcep'
+          'true'
+        else
+          'false'
+        end
+      insert conn, 'earnings', earning_params
+    end
+  end
+
+  %w[Union Photocopies Telephone Rent Water Electricity AMICAL Other].each do |deduction|
+    if params[deduction].to_i > 0
+      deduction_params = { payslip_id: params['PaySlipID'],
+                           date: date_from_period(params['Period']),
+                           amount: params[deduction],
+                           note: deduction }
+      insert conn, 'deductions', deduction_params
+    end
+  end
+end
+
+def add_payslip(conn, params)
+  month, year = parse_period params['Period']
+  ps_params = { id: params['PaySlipID'],
+                employee_id: params['EmployeeId'],
+                period_year: year,
+                period_month: month,
+                category: convert_category(params['Category']),
+                echelon: convert_echelon(params['Echelon']),
+                wagescale: convert_wage_scale(params['WageScale']),
+                basewage: params['BaseWage'],
+                days: params['Days'],
+                hours: params['Hours'],
+                overtime_hours: params['OvertimeHours'],
+                overtime2_hours: params['OvertimeHours2'],
+                overtime3_hours: params['OvertimeHours3'],
+                overtime_rate: params['OvertimeRate'],
+                overtime2_rate: params['OvertimeRate2'],
+                overtime3_rate: params['OvertimeRate3'],
+                caissebase: params['CaisseBase'],
+                cnpswage: params['CNPSWage'],
+                taxable: params['Taxable'],
+                proportional: params['ProportionalTax'],
+                communal: params['CommunalTax'],
+                cac: params['CAC'],
+                cac2: params['CAC2'],
+                cnps: params['CNPS'],
+                ccf: params['CCF'],
+                crtv: params['CRTV']
+              }
+  ps_params.delete_if{ |key, value| value.nil? or value == ''}         
+
+  insert_or_update conn, 'payslips', ps_params
+  
+  add_payslip_earnings_deductions(conn, params)
+end
+
 # Payslip Vacation Import ==================================
 
 def payslip_vacation_balance(conn, params)
@@ -718,6 +793,12 @@ end
 
 # Grouped Adds ===========================================
 
+def normal_valid_payslip?(conn, params)
+  params['Period'].include? '/' and # Skip the malformatted ones
+    params['Type'] == 'P' and 
+    exists?(conn, 'employees', params['EmployeeId'])
+end
+
 def add_people(conn)
   read_file('departments.csv') do |params|
     add_deparment conn, params
@@ -844,6 +925,20 @@ def add_bonuses(conn)
   end
 end
 
+def add_payslips(conn)
+  read_file('payslip_history.csv') do |params|
+    if normal_valid_payslip? conn, params
+      add_payslip conn, params
+    end
+  end
+
+  read_file('payslips.csv') do |params|
+    if normal_valid_payslip? conn, params
+      add_payslip conn, params
+    end
+  end
+end
+
 # ============ START HERE ===================================
 # ===========================================================
 
@@ -856,7 +951,8 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
 # add_vacations conn
 # add_loans conn
 # add_transactions conn
-add_bonuses conn
+# add_bonuses conn
+add_payslips conn
 
 ERRORS.each do |error|
   puts error
