@@ -238,7 +238,7 @@ def employee_params(params)
   p[:employment_status] = convert_employment_status params['Status']
   p[:marital_status] = convert_marital_status params['MaritalStatus']
   p[:hours_day] = params['HoursPerDay'].to_i
-  p[:days_week] = params['DaysPerWeek']
+  p[:days_week] = params['DaysPerWeek'].to_i - 1
   p[:wage] = params['Wage']
   p[:supervisor_id] = params['SupervisorId']
   p[:department_id] = params['DepartmentId']
