@@ -232,7 +232,6 @@ def employee_params(params)
   p[:echelon] = convert_echelon params['Echelon']
   p[:wage_scale] = convert_wage_scale params['WageScale']
   p[:wage_period] = convert_wage_period params['CFAper']
-  p[:last_raise_date] = extract_date params['LastVacation'], 'dd/mm/yyyy'
   p[:taxable_percentage] = params['TaxablePercent']
   p[:transportation] = params['Transportation']
   p[:employment_status] = convert_employment_status params['Status']
@@ -253,6 +252,20 @@ def employee_params(params)
   p
 end
 
+def add_last_raise(conn, csv_params, employee_params)
+  last_raise = extract_date csv_params['LastRaise']
+  unless last_raise.nil?
+    raise_params = { employee_id: employee_params[:id],
+                     date: last_raise,
+                     category: employee_params[:category],
+                     echelon: employee_params[:echelon],
+                     wage_scale: employee_params[:wage_scale],
+                     wage_period: employee_params[:wage_period],
+                     wage: employee_params[:wage]
+                    }
+    insert conn, 'raises', raise_params
+  end
+end
 
 def add_employee(conn, params)
   emp_params = employee_params params
@@ -264,6 +277,8 @@ def add_employee(conn, params)
   end
 
   insert_or_update conn, 'employees', emp_params
+
+  add_last_raise(conn, params, emp_params)
 end
   
 
@@ -947,12 +962,12 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   user: 'cmbpayroll', 
                   password: 'cmbpayroll')
 
-# add_people conn
+add_people conn
 # add_vacations conn
 # add_loans conn
 # add_transactions conn
 # add_bonuses conn
-add_payslips conn
+# add_payslips conn
 
 ERRORS.each do |error|
   puts error
