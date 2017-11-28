@@ -84,7 +84,9 @@ end
 # DB Helpers =========================================================
 
 def query(conn, sql, params=nil)
-  puts "#{sql.gsub("\n", ' ')} [#{params}]"
+  unless sql.include? 'SELECT'
+    puts "#{sql.gsub("\n", ' ')} [#{params}]"
+  end
   params.nil? ? 
           conn.exec(sql) :
           conn.exec_params(sql, params)
@@ -151,9 +153,24 @@ def update(conn, table, params)
   puts query(conn, sql).cmd_status
 end
 
+def compare_and_update(conn, table, params)
+  existing = find conn, table, params[:id]
+  fields = params.keys
+  change_params = {}
+  fields.each do |field|
+    if existing[field.to_s].to_s != params[field].to_s
+      change_params[field] = params[field]
+    end
+  end
+  unless change_params.empty?
+    change_params[:id] = params[:id]
+    update(conn, table, change_params) 
+  end
+end
+
 def insert_or_update(conn, table, params)
   if exists?(conn, table, params[:id])
-    update conn, table, params
+    compare_and_update conn, table, params
   else
     insert conn, table, params
   end
@@ -306,9 +323,9 @@ def insert_child(conn, person_params, child_params)
 end
 
 def update_child(conn, child, person_params, child_params)
-  update conn, 'children', child_params
+  compare_and_update conn, 'children', child_params
   person_params[:id] = child['person_id']
-  update conn, 'people', person_params
+  compare_and_update conn, 'people', person_params
 end
 
 def add_child(conn, params)
@@ -579,7 +596,7 @@ def normalize_vacay_balances(conn)
     balance = payslip['vacation_balance'].to_f
     new_balance = round_to_nearest_half balance
     # puts "Change #{balance} to #{new_balance}"
-    update conn, 'payslips', {id: payslip['id'], vacation_balance: new_balance}
+    compare_and_update conn, 'payslips', {id: payslip['id'], vacation_balance: new_balance}
   end
 end
 
@@ -668,7 +685,7 @@ def add_correction_payments(conn, employee_id, amount)
   end
 end
 
-def normalize_loan_balance(conn, params)
+def normalize_loan_balance(conn, params, action)
   sql = "SELECT sum(amount) FROM loans WHERE employee_id=#{params['EmployeeId']};"
   loan_total = query(conn, sql)[0]['sum'].to_i
   sql = "SELECT sum(loan_payments.amount) FROM loans 
@@ -683,11 +700,14 @@ def normalize_loan_balance(conn, params)
   check_balance = 0 if check_balance < 0
 
   if balance != check_balance
-    IMBALANCES << "[#{params['EmployeeId']}] #{params['Name']} Calc: #{balance}. Payslip: #{check_balance}."                  
-    if balance < check_balance
-      add_correction_loan(conn, params['EmployeeId'], check_balance - balance)
-    else
-      add_correction_payments(conn, params['EmployeeId'], balance - check_balance)
+    if action == :check
+      IMBALANCES << "[#{params['EmployeeId']}] #{params['Name']} Calc: #{balance}. Payslip: #{check_balance}."                  
+    elsif action == :fix
+      if balance < check_balance
+        add_correction_loan(conn, params['EmployeeId'], check_balance - balance)
+      else
+        add_correction_payments(conn, params['EmployeeId'], balance - check_balance)
+      end
     end
   end
 end
@@ -905,7 +925,8 @@ def add_loans(conn)
                                     ORDER BY period_year DESC, period_month DESC 
                                     LIMIT 1;")[0]
         if params['Period'] == "#{last_payslip['period_month']}/#{last_payslip['period_year'][2, 2]}"
-          normalize_loan_balance conn, params
+          normalize_loan_balance conn, params, :fix
+          normalize_loan_balance conn, params, :check
         else
           puts ''
           puts "Not last payslip: #{params['Period']} vs. #{last_payslip['period_month']}/#{last_payslip['period_year']}."
@@ -963,11 +984,11 @@ conn = PG.connect(dbname: 'cmbpayroll_dev',
                   password: 'cmbpayroll')
 
 add_people conn
-# add_vacations conn
-# add_loans conn
-# add_transactions conn
-# add_bonuses conn
-# add_payslips conn
+add_vacations conn
+add_loans conn
+add_transactions conn
+add_bonuses conn
+add_payslips conn
 
 ERRORS.each do |error|
   puts error
